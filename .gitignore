@@ -1,3 +1,6 @@
+*metadata*
+RemoteSystems*
+*nvcc
 dump*
 tmp*
 *.o
