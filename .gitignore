@@ -1,3 +1,5 @@
+dump*
+tmp*
 *.o
 cuwaveprop2D
 simple2DFD*
