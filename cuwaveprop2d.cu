@@ -31,11 +31,16 @@ Add this to c_cpp_properties.json if linting isn't working for cuda libraries
 
 #define PI      3.14159265359
 #define PAD     4
+#define PAD2    8
 #define a0     -3.0124472f
 #define a1      1.7383092f
 #define a2     -0.2796695f
 #define a3      0.0547837f
 #define a4     -0.0073118f
+
+#define BDIMX  32
+#define BDIMY  32
+
 
 // Allocate the constant device memory
 __constant__ float c_coef[5];       /* coefficients for 8th order fd */
@@ -43,25 +48,34 @@ __constant__ int c_isrc;            /* source location, ox */
 __constant__ int c_jsrc;            /* source location, oz */
 __constant__ int c_nx;              /* x dim */
 __constant__ int c_ny;              /* y dim */
+__constant__ int c_nt;              /* time steps */
 
 // Add source wavelet
-__global__ void kernel_add_wavelet(float *d_u1, float *d_wavelet)
+__global__ void kernel_add_wavelet(float *d_u1, float *d_wavelet, int it)
 {
     unsigned int ix = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int iy = blockIdx.y * blockDim.y + threadIdx.y;
     unsigned int idx = iy * c_nx + ix;
 
-    if (ix == c_isrc) {
-        printf("!!!%i",ix);
+    if ((ix == c_isrc) && (iy == c_jsrc)) 
+    {
+        d_u1[idx] += d_wavelet[it];
+        printf("%d %f\n",it, d_wavelet[it]);
     }
-    
-    printf("GPU kernel add wavelet %i \n", idx);
 }
 
 // FD kernel
 __global__ void kernel_2dfd(float *d_u1, float *d_u2, float *d_vp)
 {
+    unsigned int ix = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int iy = blockIdx.y * blockDim.y + threadIdx.y;
+    unsigned int idx = iy * c_nx + ix;
 
+
+    // Load blockinto memory
+    __shared__ float patch[BDIMX + PAD2][BDIMX + PAD2];
+    // printf("%d\n",idx);
+    
 }
 
 int main( int argc, char *argv[])
@@ -69,7 +83,15 @@ int main( int argc, char *argv[])
     // Print out name of the main GPU
     cudaDeviceProp deviceProp;
     CHECK(cudaGetDeviceProperties(&deviceProp, 0));
-    printf("%d: %s\n", 0, deviceProp.name);
+    printf("%s\t%d.%d:\n", deviceProp.name, deviceProp.major, deviceProp.minor);
+    printf("%lu GB:\t total Global memory (gmem)\n", deviceProp.totalGlobalMem/1024/1024/1000);
+    printf("%lu MB:\t total Constant memory (cmem)\n", deviceProp.totalConstMem/1024);
+    printf("%lu MB:\t total Shared memory per block (smem)\n", deviceProp.sharedMemPerBlock/1024);
+    printf("%d:\t total threads per block\n", deviceProp.maxThreadsPerBlock);
+    printf("%d:\t total registers per block\n", deviceProp.regsPerBlock);
+    printf("%d:\t warp size\n", deviceProp.warpSize);
+    printf("%d x %d x %d:\t max dims of block\n", deviceProp.maxThreadsDim[0], deviceProp.maxThreadsDim[1], deviceProp.maxThreadsDim[2]);
+    printf("%d x %d x %d:\t max dims of grid\n", deviceProp.maxGridSize[0], deviceProp.maxGridSize[1], deviceProp.maxGridSize[2]);
     CHECK(cudaSetDevice(0));
 
     // Model dimensions
@@ -98,7 +120,7 @@ int main( int argc, char *argv[])
     int nt = round(t_total / dt);         /* number of time steps */
 
     // Source
-    float f0 = 10.0;                        /* Hz, source dominant frequency */
+    float f0 = 100.0;                        /* Hz, source dominant frequency */
     float t0 = 1.2 / f0;                    /* source padding to move wavelet from left of zero */
 
     float *h_wavelet, *h_time;
@@ -121,7 +143,6 @@ int main( int argc, char *argv[])
     CHECK(cudaMalloc((void **) &d_vp, nbytes))          /* velocity model */
     CHECK(cudaMalloc((void **) &d_wavelet, nbytes));    /* source term for each time step */
     
-    // Transfer data to device
     CHECK(cudaMemset(d_u1, 0, nbytes))
     CHECK(cudaMemset(d_u2, 0, nbytes))
     CHECK(cudaMemcpy(d_vp, h_vp, nbytes, cudaMemcpyHostToDevice));
@@ -136,14 +157,24 @@ int main( int argc, char *argv[])
     CHECK(cudaMemcpyToSymbol(c_jsrc, &jsrc, sizeof(int)));
     CHECK(cudaMemcpyToSymbol(c_nx, &nx, sizeof(int)));
     CHECK(cudaMemcpyToSymbol(c_ny, &ny, sizeof(int)));
+    CHECK(cudaMemcpyToSymbol(c_nt, &nt, sizeof(int)));
+
+
+    // Setup kernel run
+    dim3 block(BDIMX, BDIMY);
+    dim3 grid((nx + block.x - 1) / block.x, (ny + block.y - 1) / block.y);
     
     printf("%i\tnt\n",nt);
-    for(int istep = 0; istep < nt; istep++)
+    for(int it = 0; it < nt; it++)
     {
-    //    kernel_2dfd<<<grid, block>>>(d_u1, d_u2)
-        kernel_add_wavelet<<<32,1>>>(d_u1, d_wavelet);
+        kernel_add_wavelet<<<grid,block>>>(d_u1, d_wavelet, it);
+        kernel_2dfd<<<grid,block>>>(d_u1, d_u2, d_vp);
     }
     
+    free(h_vp);
+    free(h_time);
+    free(h_wavelet);
+
     CHECK(cudaFree(d_u1));
     CHECK(cudaFree(d_u2));
     CHECK(cudaFree(d_vp));
