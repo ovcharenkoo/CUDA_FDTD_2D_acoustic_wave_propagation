@@ -31,15 +31,17 @@ Add this to c_cpp_properties.json if linting isn't working for cuda libraries
     }
 
 #define PI 3.14159265359
+
 #define HALO 4
 #define HALO2 8
-#define a0 -3.0124472f
-#define a1 1.7383092f
-#define a2 -0.2796695f
-#define a3 0.0547837f
-#define a4 -0.0073118f
 
-#define BDIMX 16
+#define a0 -2.8472222f
+#define a1 1.6000000f
+#define a2 -0.2000000f
+#define a3 0.0253968f
+#define a4 -0.0017857f
+
+#define BDIMX 32
 #define BDIMY 16
 
 #define SDIMX BDIMX + HALO2
@@ -52,18 +54,18 @@ __constant__ int c_jsrc;      /* source location, oz */
 __constant__ int c_nx;        /* x dim */
 __constant__ int c_ny;        /* y dim */
 __constant__ int c_nt;        /* time steps */
-
+__constant__ int c_dt2dx2;    /* dt2 / dx2 for fd*/
 
 // Save snapshot as a binary
-void saveSnapshotIstep(int istep, float *data, int ny, int nx)
+void saveSnapshotIstep(int istep, float *data, int nx, int ny)
 {
     float *iwave = (float *)malloc(nx * ny * sizeof(float));
 
     unsigned int isize = nx * ny;
     CHECK(cudaMemcpy(iwave, data, isize * sizeof(float), cudaMemcpyDeviceToHost));
 
-    char fname[20];
-    sprintf(fname, "snap_%i_%i_%i", istep, ny, nx);
+    char fname[32];
+    sprintf(fname, "snap/snap_%i_%i_%i", istep, ny, nx);
 
     FILE *fp_snap = fopen(fname, "w");
 
@@ -77,24 +79,20 @@ void saveSnapshotIstep(int istep, float *data, int ny, int nx)
 }
 
 // Add source wavelet
-__global__ void kernel_add_wavelet(float *d_u1, float *d_wavelet, int it)
+__global__ void kernel_add_wavelet(float *d_u, float *d_wavelet, int it)
 {
-    unsigned int ix = blockIdx.x * blockDim.x + threadIdx.x;
-    unsigned int iy = blockIdx.y * blockDim.y + threadIdx.y;
-    unsigned int idx = iy * c_nx + ix;
+    unsigned int gx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int gy = blockIdx.y * blockDim.y + threadIdx.y;
+    unsigned int idx = gy * c_nx + gx;
 
-    if ((ix == c_isrc) && (iy == c_jsrc))
+    if ((gx == c_isrc) && (gy == c_jsrc))
     {
-        d_u1[idx] += d_wavelet[it];
-        // printf("%d %f\n",it, d_wavelet[it]);
+        d_u[idx] += d_wavelet[it];
     }
 }
 
-__device__ void set_halo(float *global, float shared[][SDIMX], int tx, int ty, int gx, int gy, int nx, int ny)
+__device__ void set_halo(float *global, float shared[][SDIMX], int tx, int ty, int sx, int sy, int gx, int gy, int nx, int ny)
 {
-    const int sx = tx + HALO;
-    const int sy = ty + HALO;
-
     // fill inner smem
     shared[sy][sx] = global[gy * nx + gx];
 
@@ -113,9 +111,9 @@ __device__ void set_halo(float *global, float shared[][SDIMX], int tx, int ty, i
         }
     }
     // RIGHT
-    if ((tx > (BDIMX - HALO)) || ((gx + HALO) > nx))
+    if ((tx >= (BDIMX - HALO)) || ((gx + HALO) >= nx))
     {
-        if ((gx + HALO) > nx)
+        if ((gx + HALO) >= nx)
         {
             // if global right
             shared[sy][sx + HALO] = 0.0;
@@ -126,7 +124,7 @@ __device__ void set_halo(float *global, float shared[][SDIMX], int tx, int ty, i
             shared[sy][sx + HALO] = global[gy * nx + gx + HALO];
         }
     }
-    
+
     // BOTTOM
     if (ty < HALO)
     {
@@ -141,11 +139,11 @@ __device__ void set_halo(float *global, float shared[][SDIMX], int tx, int ty, i
             shared[sy - HALO][sx] = global[(gy - HALO) * nx + gx];
         }
     }
-    
+
     // TOP
-    if ((ty > (BDIMY - HALO)) || ((gy + HALO) > ny))
+    if ((ty >= (BDIMY - HALO)) || ((gy + HALO) >= ny))
     {
-        if ((gy + HALO) > ny)
+        if ((gy + HALO) >= ny)
         {
             // if global top
             shared[sy + HALO][sx] = 0.0;
@@ -159,39 +157,164 @@ __device__ void set_halo(float *global, float shared[][SDIMX], int tx, int ty, i
 }
 
 // FD kernel
-__global__ void kernel_2dfd(float *d_u1, float *d_u2, float *d_vp)
+__global__ void kernel_2dfd(float *d_u1, float *d_u2, float *d_u3, float *d_vp)
 {
+    // save model dims in registers as they are much faster
     const int nx = c_nx;
     const int ny = c_ny;
 
-    // thread addres (ty, tx) within a block
+    // fd coef dt2 / dx2
+    const float dt2dx2 = c_dt2dx2;
+
+    // thread addres (ty, tx) in a block
     const unsigned int tx = threadIdx.x;
     const unsigned int ty = threadIdx.y;
 
-    // thread address (gy, gx) in global memory space
+    // thread addres (sy, sx) in shared memory
+    const unsigned int sx = threadIdx.x + HALO;
+    const unsigned int sy = threadIdx.y + HALO;
+
+    // thread address (gy, gx) in global memory
     const unsigned int gx = blockIdx.x * blockDim.x + tx;
     const unsigned int gy = blockIdx.y * blockDim.y + ty;
 
+    // global linear index
+    const unsigned int idx = gy * nx + gx;
+
     // Allocate shared memory(smem)
-    __shared__ float s_u1[BDIMX + HALO2][BDIMX + HALO2];
-    __shared__ float s_u2[BDIMX + HALO2][BDIMX + HALO2];
-    __shared__ float s_vp[BDIMX + HALO2][BDIMX + HALO2];
+    __shared__ float s_u1[SDIMY][SDIMX];
+    __shared__ float s_u2[SDIMY][SDIMX];
+    __shared__ float s_vp[SDIMY][SDIMX];
+    // __shared__ float tmp[SDIMY][SDIMX];
 
 
     // if thread points into the model
-    if ((tx < nx) && (ty < ny))
+    if ((gx < nx) && (gy < ny))
     {
-        set_halo(d_u1, s_u1, tx, ty, gx, gy, nx, ny);
-        set_halo(d_u2, s_u1, tx, ty, gx, gy, nx, ny);
-        set_halo(d_vp, s_vp, tx, ty, gx, gy, nx, ny);
+        // Copy regions from gmem into smem
+        //       gmem, smem,  block, shared, global, dims
+        set_halo(d_u1, s_u1, tx, ty, sx, sy, gx, gy, nx, ny);
+        set_halo(d_u2, s_u2, tx, ty, sx, sy, gx, gy, nx, ny);
+        set_halo(d_vp, s_vp, tx, ty, sx, sy, gx, gy, nx, ny);
+        // set_halo(d_vp, tmp, tx, ty, sx, sy, gx, gy, nx, ny);
+        __syncthreads();
+
+        // if ((gx==1) && (gy==1))
+        // {
+        //     printf("\t%f\t:s_vp\n",s_vp[sy][sx]);
+        //     printf("\t%f\t:s_u1\n",s_u1[sy][sx]);
+        //     printf("\t%f\t:s_u2\n\n",s_u2[sy][sx]);
+
+        // }
+
+        float du2_xx = c_coef[0] * s_u1[sy][sx];
+        float du2_yy = c_coef[0] * s_u1[sy][sx];
+
+#pragma unroll
+        for (int d = 1; d <= 4; d++)
+        {
+            du2_xx += c_coef[d] * (s_u2[sy][sx - d] + s_u2[sy][sx + d]);
+            du2_yy += c_coef[d] * (s_u2[sy - d][sx] + s_u2[sy + d][sx]);
+        }
+        d_u3[idx] = 2 * s_u2[sy][sx] - s_u1[sy][sx] + s_vp[sy][sx] * s_vp[sy][sx] * (du2_xx + du2_yy) * dt2dx2;
+        __syncthreads();
+
+        // d_u3[idx] = tmp[sy+1][sx+1];
     }
-
-
-    __syncthreads();
 }
 
+/*
+===================================================================================
+MAIN
+===================================================================================
+*/
 int main(int argc, char *argv[])
 {
+    // Model dimensions
+    int nx = 128; /* x dim */
+    int ny = 128; /* z dim */
+
+    size_t nxy = nx * ny;
+    size_t nbytes = nxy * sizeof(float); /* bytes to store nx * ny */
+
+    float dx = 1.0; /* m */
+
+    // Allocate memory for velocity model
+    float _vp = 3300.0; /* m/s, p-wave velocity */
+    float *h_vp;
+    h_vp = (float *)malloc(nbytes);
+    for (int i = 0; i < nxy; i++)
+    {
+        h_vp[i] = _vp;
+    }
+
+    printf("MODEL:\n");
+    printf("\t%i x %i\t:ny x nx\n", ny, nx);
+    printf("\t%f\t:dx\n", dx);
+    printf("\t%f\t:h_vp[0]\n", h_vp[0]);
+
+    // Time stepping
+    float t_total = 0.05;         /* sec, total time of wave propagation */
+    float dt = 0.7 * dx / _vp;    /* sec, time step assuming constant vp */
+    int nt = round(t_total / dt); /* number of time steps */
+
+    printf("TIME STEPPING:\n");
+    printf("\t%e\t:t_total\n", t_total);
+    printf("\t%e\t:dt\n", dt);
+    printf("\t%i\t:nt\n", nt);
+
+    // Source
+    float f0 = 10.0;                 /* Hz, source dominant frequency */
+    float t0 = 1.2 / f0;             /* source HALOding to move wavelet from left of zero */
+    int isrc = round((float)nx / 2); /* source location, ox */
+    int jsrc = round((float)ny / 2); /* source location, oz */
+
+    float *h_wavelet, *h_time;
+    h_time = (float *)malloc(nt * sizeof(float));
+    h_wavelet = (float *)malloc(nt * sizeof(float));
+
+    // Fill source waveform vecror
+    float a = PI * PI * f0 * f0;        /* const for wavelet */
+    float dt2dx2 = dt * dt / (dx * dx); /* const for fd stencil */
+    for (size_t it = 0; it < nt; it++)
+    {
+        h_time[it] = it * dt;
+        h_wavelet[it] = 1e10 * (1.0 - 2.0 * a * pow(h_time[it] - t0, 2)) * exp(-a * pow(h_time[it] - t0, 2));
+        h_wavelet[it] *= dt2dx2;
+    }
+
+    printf("SOURCE:\n");
+    printf("\t%f\t:f0\n", f0);
+    printf("\t%f\t:t0\n", t0);
+    printf("\t%i\t:isrc - ox\n", isrc);
+    printf("\t%i\t:jsrc - oy\n", jsrc);
+    printf("\t%e\t:dt2dx2\n", dt2dx2);
+
+    // Allocate memory on device
+    printf("Allocate and copy memory on the device...");
+    float *d_u1, *d_u2, *d_u3, *d_vp, *d_wavelet;
+    CHECK(cudaMalloc((void **)&d_u1, nbytes))       /* wavefield at t-2 */
+    CHECK(cudaMalloc((void **)&d_u2, nbytes))       /* wavefield at t-1 */
+    CHECK(cudaMalloc((void **)&d_u3, nbytes))       /* wavefield at t */
+    CHECK(cudaMalloc((void **)&d_vp, nbytes))       /* velocity model */
+    CHECK(cudaMalloc((void **)&d_wavelet, nbytes)); /* source term for each time step */
+
+    CHECK(cudaMemset(d_u1, 0, nbytes))
+    CHECK(cudaMemset(d_u2, 0, nbytes))
+    CHECK(cudaMemset(d_u3, 0, nbytes))
+    CHECK(cudaMemcpy(d_vp, h_vp, nbytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_wavelet, h_wavelet, nbytes, cudaMemcpyHostToDevice));
+
+    float coef[] = {a0, a1, a2, a3, a4};
+    CHECK(cudaMemcpyToSymbol(c_coef, coef, 5 * sizeof(float)));
+    CHECK(cudaMemcpyToSymbol(c_isrc, &isrc, sizeof(int)));
+    CHECK(cudaMemcpyToSymbol(c_jsrc, &jsrc, sizeof(int)));
+    CHECK(cudaMemcpyToSymbol(c_nx, &nx, sizeof(int)));
+    CHECK(cudaMemcpyToSymbol(c_ny, &ny, sizeof(int)));
+    CHECK(cudaMemcpyToSymbol(c_nt, &nt, sizeof(int)));
+    CHECK(cudaMemcpyToSymbol(c_dt2dx2, &dt2dx2, sizeof(float)));
+    printf("OK\n");
+
     // Print out name of the main GPU
     cudaDeviceProp deviceProp;
     CHECK(cudaGetDeviceProperties(&deviceProp, 0));
@@ -206,93 +329,52 @@ int main(int argc, char *argv[])
     printf("%d x %d x %d:\t max dims of grid\n", deviceProp.maxGridSize[0], deviceProp.maxGridSize[1], deviceProp.maxGridSize[2]);
     CHECK(cudaSetDevice(0));
 
-    // Model dimensions
-    int nx = 1024; /* x dim */
-    int ny = 1024; /* z dim */
-
-    size_t nxy = nx * ny;
-    size_t nbytes = nxy * sizeof(float); /* bytes to store nx * ny */
-
-    float dx = 1; /* m */
-    float dy = dx;
-
-    // Allocate memory for velocity model
-    float _vp = 3300; /* m/s, p-wave velocity */
-    float *h_vp;
-    h_vp = (float *)malloc(nbytes);
-    memset(h_vp, _vp, nbytes); /* initiate h_vp with _vp */
-
-    // Time stepping
-    float t_total = 0.05;                /* sec, total time of wave propagation */
-    float dt = 0.7 * fmin(dx, dy) / _vp; /* sec, time step assuming constant vp */
-    int nt = round(t_total / dt);        /* number of time steps */
-
-    // Source
-    float f0 = 100.0;    /* Hz, source dominant frequency */
-    float t0 = 1.2 / f0; /* source HALOding to move wavelet from left of zero */
-
-    float *h_wavelet, *h_time;
-    h_time = (float *)malloc(nt * sizeof(float));
-    h_wavelet = (float *)malloc(nt * sizeof(float));
-
-    // Fill source waveform vecror
-    float a = PI * PI * f0 * f0; /* const for wavelet */
-    for (size_t it = 0; it < nt; it++)
-    {
-        h_time[it] = it * dt;
-        h_wavelet[it] = 1e10 * (1.0 - 2.0 * a * pow(h_time[it] - t0, 2)) * exp(-a * pow(h_time[it] - t0, 2));
-        h_wavelet[it] *= dt * dt / (dx * dy);
-    }
-
-    // Allocate memory on device
-    printf("Allocate and copy memory on device...");
-    float *d_u1, *d_u2, *d_vp, *d_wavelet;
-    CHECK(cudaMalloc((void **)&d_u1, nbytes))       /* wavefield at t-1 */
-    CHECK(cudaMalloc((void **)&d_u2, nbytes))       /* wavefield at t-2 */
-    CHECK(cudaMalloc((void **)&d_vp, nbytes))       /* velocity model */
-    CHECK(cudaMalloc((void **)&d_wavelet, nbytes)); /* source term for each time step */
-
-    CHECK(cudaMemset(d_u1, 0, nbytes))
-    CHECK(cudaMemset(d_u2, 0, nbytes))
-    CHECK(cudaMemcpy(d_vp, h_vp, nbytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_wavelet, h_wavelet, nbytes, cudaMemcpyHostToDevice));
-
-    float coef[] = {a0, a1, a2, a3, a4};
-    int isrc = round((float)nx / 2); /* source location, ox */
-    int jsrc = round((float)ny / 2); /* source location, oz */
-
-    CHECK(cudaMemcpyToSymbol(c_coef, coef, 5 * sizeof(float)));
-    CHECK(cudaMemcpyToSymbol(c_isrc, &isrc, sizeof(int)));
-    CHECK(cudaMemcpyToSymbol(c_jsrc, &jsrc, sizeof(int)));
-    CHECK(cudaMemcpyToSymbol(c_nx, &nx, sizeof(int)));
-    CHECK(cudaMemcpyToSymbol(c_ny, &ny, sizeof(int)));
-    CHECK(cudaMemcpyToSymbol(c_nt, &nt, sizeof(int)));
-    printf("OK\n");
+    printf("CUDA:\n");
+    printf("\t%i x %i\t:block dim\n", BDIMY, BDIMX);
+    printf("\t%i x %i\t:shared dim\n", SDIMY, SDIMX);
+    printf("CFL:\n");
+    printf("\t%f\n", _vp * dt / dx);
 
     // Setup kernel run
     dim3 block(BDIMX, BDIMY);
     dim3 grid((nx + block.x - 1) / block.x, (ny + block.y - 1) / block.y);
 
-    // MAIN LOOP 
+    // MAIN LOOP
+    printf("Time loop...\n");
     for (int it = 0; it < nt; it++)
     {
-        printf("Step %i/%i\n", it+1, nt);
-        kernel_add_wavelet<<<grid, block>>>(d_u1, d_wavelet, it);
-        kernel_2dfd<<<grid, block>>>(d_u1, d_u2, d_vp);
+        // printf("Step %i/%i\n", it+1, nt);
 
-        if (it == 100)
-        {
-            saveSnapshotIstep(it, d_u2, ny, nx);
+        kernel_add_wavelet<<<grid, block>>>(d_u2, d_wavelet, it);
+        CHECK(cudaDeviceSynchronize());
+
+        kernel_2dfd<<<grid, block>>>(d_u1, d_u2, d_u3, d_vp);
+        CHECK(cudaDeviceSynchronize());
+
+        if ((it < 5) && (it % 1 == 0))
+        {   
+            printf("%e\n",h_wavelet[it]);
+            saveSnapshotIstep(it, d_u3, nx, ny);
         }
+
+        // Exchange time steps
+        d_u1 = d_u2;
+        d_u2 = d_u3;
     }
+    printf("OK\n");
+
+    // saveSnapshotIstep(100, d_vp, nx, ny);
+
+    CHECK(cudaGetLastError());
 
     printf("Clean memory...");
-    free(h_vp);
-    free(h_time);
-    free(h_wavelet);
+    delete[] h_vp;
+    delete[] h_time;
+    delete[] h_wavelet;
 
     CHECK(cudaFree(d_u1));
     CHECK(cudaFree(d_u2));
+    CHECK(cudaFree(d_u3));
     CHECK(cudaFree(d_vp));
     CHECK(cudaFree(d_wavelet));
     printf("OK\n");
