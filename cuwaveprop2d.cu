@@ -82,7 +82,7 @@ void saveSnapshotIstep(int it, float *data, int nx, int ny, const char *tag)
     FILE *fp_snap = fopen(fname, "w");
 
     fwrite(iwave, sizeof(float), nx * ny, fp_snap);
-    printf("%s: nx = %i ny = %i it = %i tag = %s\n", fname, nx, ny, it, tag);
+    printf("Save...%s: nx = %i ny = %i it = %i tag = %s\n", fname, nx, ny, it, tag);
     fflush(stdout);
     fclose(fp_snap);
 
@@ -254,8 +254,8 @@ MAIN
 int main(int argc, char *argv[])
 {
     // Model dimensions
-    int nx = 1024;                      /* x dim */
-    int ny = 1024;                      /* z dim */
+    int nx = 512;                      /* x dim */
+    int ny = 512;                      /* z dim */
 
     size_t nxy = nx * ny;
     size_t nbytes = nxy * sizeof(float);/* bytes to store nx * ny */
@@ -280,7 +280,7 @@ int main(int argc, char *argv[])
     float t_total = 1.5;               /* total time of wave propagation, sec */
     float dt = 0.5 * dx / _vp;          /* time step assuming constant vp, sec */
     int nt = round(t_total / dt);       /* number of time steps */
-    int snap_step = round(0.05 * nt);   /* save snapshot every ... steps */
+    int snap_step = round(0.025 * nt);   /* save snapshot every ... steps */
 
     printf("TIME STEPPING:\n");
     printf("\t%e\t:t_total\n", t_total);

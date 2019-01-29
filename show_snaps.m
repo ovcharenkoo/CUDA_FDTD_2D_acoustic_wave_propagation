@@ -49,7 +49,7 @@ for ifile = 1:nfiles
 end
 
 %%
-figure;
+h = figure;
 for ifile = 1:nfiles
     data = squeeze(data_array(:,:,ifile));
     fname = files(ifile).name;
@@ -57,7 +57,23 @@ for ifile = 1:nfiles
 %     imagesc(data); colormap jet; axis equal tight; colorbar;
     title([num2str(t_list(ifile)) ' ' num2str(ny) ' x ' num2str(nx)]); drawnow;
 %     surf(data); axis equal tight; colormap jet;
-    surf(data); shading interp; lighting phong; colormap hot; axis equal tight; colorbar; drawnow;
+    surf(data); shading interp; lighting phong; colormap hot; 
+    axis equal tight; colorbar; grid off; set(gcf, 'color', 'white');
+    drawnow;
 %     set(gcf,'Color', [0 0 0], 'Name', sprintf('Tiny FDTD, step = %i', n));
 %     kk = waitforbuttonpress;
+
+
+      % Capture the plot as an image 
+%       frame = getframe(h); 
+%       im = frame2im(frame); 
+%       [imind,cm] = rgb2ind(im,256); 
+%       % Write to the GIF File
+%       if ifile>=10
+%           if ifile == 10 
+%               imwrite(imind,cm,'./doc/wave.gif','gif', 'Loopcount',inf,'DelayTime',0.1); 
+%           else 
+%               imwrite(imind,cm,'./doc/wave.gif','gif','WriteMode','append'); 
+%           end 
+%       end
 end
