@@ -49,6 +49,7 @@ for ifile = 1:nfiles
 end
 
 %%
+figure;
 for ifile = 1:nfiles
     data = squeeze(data_array(:,:,ifile));
     fname = files(ifile).name;
@@ -56,7 +57,7 @@ for ifile = 1:nfiles
 %     imagesc(data); colormap jet; axis equal tight; colorbar;
     title([num2str(t_list(ifile)) ' ' num2str(ny) ' x ' num2str(nx)]); drawnow;
 %     surf(data); axis equal tight; colormap jet;
-    surf(data); shading interp; lighting phong; colormap hot; axis equal tight; colorbar;
+    surf(data); shading interp; lighting phong; colormap hot; axis equal tight; colorbar; drawnow;
 %     set(gcf,'Color', [0 0 0], 'Name', sprintf('Tiny FDTD, step = %i', n));
 %     kk = waitforbuttonpress;
 end

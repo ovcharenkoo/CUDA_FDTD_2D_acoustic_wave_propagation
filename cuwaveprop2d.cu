@@ -59,10 +59,10 @@ __constant__ int c_dt2dx2;    /* dt2 / dx2 for fd*/
 // Save snapshot as a binary
 void saveSnapshotIstep(int istep, float *data, int nx, int ny, const char *tag)
 {
-    float *iwave = (float *)malloc(nx * ny * sizeof(float));
-
-    unsigned int isize = nx * ny;
-    CHECK(cudaMemcpy(iwave, data, isize * sizeof(float), cudaMemcpyDeviceToHost));
+    // Array to store wavefield
+    unsigned int isize = nx * ny * sizeof(float);
+    float *iwave = (float *)malloc(isize);
+    CHECK(cudaMemcpy(iwave, data, isize, cudaMemcpyDeviceToHost));
 
     char fname[32];
     sprintf(fname, "snap/snap_%s_%i_%i_%i", tag, istep, ny, nx);
@@ -88,9 +88,6 @@ __global__ void kernel_add_wavelet(float *d_u, float *d_wavelet, int it)
     if ((gx == c_isrc) && (gy == c_jsrc))
     {
         d_u[idx] += d_wavelet[it];
-        // d_u[idx] = 1.0;
-
-        // printf("\t%i\t%f\t%f\n",it, d_u[idx], d_wavelet[it]);
     }
 }
 
@@ -188,8 +185,6 @@ __global__ void kernel_2dfd(float *d_u1, float *d_u2, float *d_vp, float dt2dx2)
     __shared__ float s_u1[SDIMY][SDIMX];
     __shared__ float s_u2[SDIMY][SDIMX];
     __shared__ float s_vp[SDIMY][SDIMX];
-    // __shared__ float tmp[SDIMY][SDIMX];
-
 
     // if thread points into the model
     if ((gx < nx) && (gy < ny))
@@ -210,27 +205,14 @@ __global__ void kernel_2dfd(float *d_u1, float *d_u2, float *d_vp, float dt2dx2)
             du2_xx += c_coef[d] * (s_u2[sy][sx - d] + s_u2[sy][sx + d]);
             du2_yy += c_coef[d] * (s_u2[sy - d][sx] + s_u2[sy + d][sx]);
         }
-        // if ((gx == c_isrc-1) && (gy == c_jsrc-1))
-        // {
-        //     // printf("%e %e %e %e %e %e\n", d_u3[idx], s_u2[sy][sx],s_u1[sy][sx],du2_xx, du2_yy,dt2dx2);
-        //     printf("\t%i %i %i %i %e %e\n", c_isrc, c_jsrc, c_nx, c_ny, c_dt2dx2, dt2dx2); 
-        //     // printf("\t\t%f\t%f\t%f\t%f\t%f\n", c_coef[0], c_coef[1], c_coef[2], c_coef[3], c_coef[4]);
-        // }
 
-        // d_u3[idx] = 2.0 * s_u2[sy][sx] - s_u1[sy][sx] + s_vp[sy][sx] * s_vp[sy][sx] * (du2_xx + du2_yy) * dt2dx2;
         d_u1[idx] = 2.0 * s_u2[sy][sx] - s_u1[sy][sx] + s_vp[sy][sx] * s_vp[sy][sx] * (du2_xx + du2_yy) * dt2dx2;
 
-        // if ((gx == c_isrc-1) && (gy == c_jsrc-1))
-        // {
-        //     printf("\t%e %e %e %e %e %e\n", d_u3[idx], s_u2[sy][sx],s_u1[sy][sx],du2_xx, du2_yy,dt2dx2);
-        //     printf("\t\t%i %i %f\n", ny, nx, dt2dx2);
-
-        // }
         __syncthreads();
-
-        // d_u3[idx] = tmp[sy+1][sx+1];
     }
 }
+
+
 
 /*
 ===================================================================================
@@ -240,8 +222,8 @@ MAIN
 int main(int argc, char *argv[])
 {
     // Model dimensions
-    int nx = 512; /* x dim */
-    int ny = 512; /* z dim */
+    int nx = 1024; /* x dim */
+    int ny = 1024; /* z dim */
 
     size_t nxy = nx * ny;
     size_t nbytes = nxy * sizeof(float); /* bytes to store nx * ny */
@@ -263,8 +245,8 @@ int main(int argc, char *argv[])
     printf("\t%f\t:h_vp[0]\n", h_vp[0]);
 
     // Time stepping
-    float t_total = 0.55;         /* sec, total time of wave propagation */
-    float dt = 0.35 * dx / _vp;    /* sec, time step assuming constant vp */
+    float t_total = 1.55;         /* sec, total time of wave propagation */
+    float dt = 0.5 * dx / _vp;    /* sec, time step assuming constant vp */
     int nt = round(t_total / dt); /* number of time steps */
     int snap_step = round(0.05 * nt);
 
@@ -355,7 +337,6 @@ int main(int argc, char *argv[])
     printf("Time loop...\n");
     for (int it = 0; it < nt; it++)
     {
-        printf("Step %i/%i\n", it+1, nt);
         // These kernels are in the same stream so they will be executes successively
         kernel_add_wavelet<<<grid, block>>>(d_u2, d_wavelet, it);
         kernel_2dfd<<<grid, block>>>(d_u1, d_u2, d_vp, dt2dx2);
@@ -368,6 +349,7 @@ int main(int argc, char *argv[])
 
         if ((it % snap_step == 0))
         {   
+            printf("%i/%i\n", it+1, nt);
             saveSnapshotIstep(it, d_u3, nx, ny,"u3");
         }
     }
@@ -382,7 +364,6 @@ int main(int argc, char *argv[])
 
     CHECK(cudaFree(d_u1));
     CHECK(cudaFree(d_u2));
-    // CHECK(cudaFree(d_u3));
     CHECK(cudaFree(d_vp));
     CHECK(cudaFree(d_wavelet));
     printf("OK\n");
