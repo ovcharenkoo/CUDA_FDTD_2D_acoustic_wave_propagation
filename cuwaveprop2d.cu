@@ -10,7 +10,7 @@ oleg.ovcharenko@kaust.edu.sa
 #include "stdlib.h"
 #include "string.h"
 /*
-Add this to c_cpp_properties.json if linting isn't working for cuda libraries
+Add this to c_cpp_properties.json if linting isn't working for CUDA libraries
 "includePath": [
                 "/usr/local/cuda-10.0/targets/x86_64-linux/include",
                 "${workspaceFolder}/**"
@@ -77,7 +77,7 @@ void saveSnapshotIstep(int it, float *data, int nx, int ny, const char *tag)
     CHECK(cudaMemcpy(iwave, data, isize, cudaMemcpyDeviceToHost));
 
     char fname[32];
-    sprintf(fname, "snap/snap_%s_%i_%i_%i", tag, istep, ny, nx);
+    sprintf(fname, "snap/snap_%s_%i_%i_%i", tag, it, ny, nx);
 
     FILE *fp_snap = fopen(fname, "w");
 
@@ -277,7 +277,7 @@ int main(int argc, char *argv[])
     printf("\t%f\t:h_vp[0]\n", h_vp[0]);
 
     // Time stepping
-    float t_total = 1.55;               /* total time of wave propagation, sec */
+    float t_total = 1.5;               /* total time of wave propagation, sec */
     float dt = 0.5 * dx / _vp;          /* time step assuming constant vp, sec */
     int nt = round(t_total / dt);       /* number of time steps */
     int snap_step = round(0.05 * nt);   /* save snapshot every ... steps */
