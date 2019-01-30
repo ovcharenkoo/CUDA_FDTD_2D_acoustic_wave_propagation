@@ -62,7 +62,7 @@ __constant__ int c_jsrc;      /* source location, oz */
 __constant__ int c_nx;        /* x dim */
 __constant__ int c_ny;        /* y dim */
 __constant__ int c_nt;        /* time steps */
-__constant__ int c_dt2dx2;    /* dt2 / dx2 for fd !!! SMTH WRONG WITH THIS COEF*/ 
+__constant__ float c_dt2dx2;  /* dt2 / dx2 for fd*/
 
 // Save snapshot as a binary, filename snap/snap_tag_it_ny_nx
 void saveSnapshotIstep(int it, float *data, int nx, int ny, const char *tag)
@@ -85,7 +85,7 @@ void saveSnapshotIstep(int it, float *data, int nx, int ny, const char *tag)
     FILE *fp_snap = fopen(fname, "w");
 
     fwrite(iwave, sizeof(float), nx * ny, fp_snap);
-    printf("Save...%s: nx = %i ny = %i it = %i tag = %s\n", fname, nx, ny, it, tag);
+    printf("\tSave...%s: nx = %i ny = %i it = %i tag = %s\n", fname, nx, ny, it, tag);
     fflush(stdout);
     fclose(fp_snap);
 
@@ -190,15 +190,14 @@ __device__ void set_halo(float *global, float shared[][SDIMX], int tx, int ty, i
 }
 
 // FD kernel
-__global__ void kernel_2dfd(float *d_u1, float *d_u2, float *d_vp, float dt2dx2)
+__global__ void kernel_2dfd(float *d_u1, float *d_u2, float *d_vp)
 {
     // save model dims in registers as they are much faster
     const int nx = c_nx;
     const int ny = c_ny;
 
-    // !!! SMTH WRONG WITH THIS COEF that is why it is passed as an argument
     // FD coefficient dt2 / dx2
-    // const float dt2dx2 = c_dt2dx2;
+    const float dt2dx2 = c_dt2dx2;
 
     // Thread address (ty, tx) in a block
     const unsigned int tx = threadIdx.x;
@@ -350,15 +349,15 @@ int main(int argc, char *argv[])
     // Print out specs of the main GPU
     cudaDeviceProp deviceProp;
     CHECK(cudaGetDeviceProperties(&deviceProp, 0));
-    printf("%s\t%d.%d:\n", deviceProp.name, deviceProp.major, deviceProp.minor);
-    printf("%lu GB:\t total Global memory (gmem)\n", deviceProp.totalGlobalMem / 1024 / 1024 / 1000);
-    printf("%lu MB:\t total Constant memory (cmem)\n", deviceProp.totalConstMem / 1024);
-    printf("%lu MB:\t total Shared memory per block (smem)\n", deviceProp.sharedMemPerBlock / 1024);
-    printf("%d:\t total threads per block\n", deviceProp.maxThreadsPerBlock);
-    printf("%d:\t total registers per block\n", deviceProp.regsPerBlock);
-    printf("%d:\t warp size\n", deviceProp.warpSize);
-    printf("%d x %d x %d:\t max dims of block\n", deviceProp.maxThreadsDim[0], deviceProp.maxThreadsDim[1], deviceProp.maxThreadsDim[2]);
-    printf("%d x %d x %d:\t max dims of grid\n", deviceProp.maxGridSize[0], deviceProp.maxGridSize[1], deviceProp.maxGridSize[2]);
+    printf("GPU0:\t%s\t%d.%d:\n", deviceProp.name, deviceProp.major, deviceProp.minor);
+    printf("\t%lu GB:\t total Global memory (gmem)\n", deviceProp.totalGlobalMem / 1024 / 1024 / 1000);
+    printf("\t%lu MB:\t total Constant memory (cmem)\n", deviceProp.totalConstMem / 1024);
+    printf("\t%lu MB:\t total Shared memory per block (smem)\n", deviceProp.sharedMemPerBlock / 1024);
+    printf("\t%d:\t total threads per block\n", deviceProp.maxThreadsPerBlock);
+    printf("\t%d:\t total registers per block\n", deviceProp.regsPerBlock);
+    printf("\t%d:\t warp size\n", deviceProp.warpSize);
+    printf("\t%d x %d x %d:\t max dims of block\n", deviceProp.maxThreadsDim[0], deviceProp.maxThreadsDim[1], deviceProp.maxThreadsDim[2]);
+    printf("\t%d x %d x %d:\t max dims of grid\n", deviceProp.maxGridSize[0], deviceProp.maxGridSize[1], deviceProp.maxGridSize[2]);
     CHECK(cudaSetDevice(0));
 
     // Print out CUDA domain partitioning info
@@ -379,7 +378,7 @@ int main(int argc, char *argv[])
     {
         // These kernels are in the same stream so they will be executed one by one
         kernel_add_wavelet<<<grid, block>>>(d_u2, d_wavelet, it);
-        kernel_2dfd<<<grid, block>>>(d_u1, d_u2, d_vp, dt2dx2);
+        kernel_2dfd<<<grid, block>>>(d_u1, d_u2, d_vp);
         CHECK(cudaDeviceSynchronize());
 
         // Exchange time steps
