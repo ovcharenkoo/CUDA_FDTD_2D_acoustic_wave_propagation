@@ -1,8 +1,11 @@
 /*
 Hello world of wave propagation in CUDA. FDTD acoustic wave propagation in homogeneous medium. Second order accurate in time and eigth in space.
 
-Oleg Ovcharenko, 2019
+Oleg Ovcharenko
+Vladimir Kazei, 2019
+
 oleg.ovcharenko@kaust.edu.sa
+vladimir.kazei@kaust.edu.sa
 */
 
 #include "stdio.h"
@@ -280,7 +283,7 @@ int main(int argc, char *argv[])
     float t_total = 1.5;               /* total time of wave propagation, sec */
     float dt = 0.5 * dx / _vp;          /* time step assuming constant vp, sec */
     int nt = round(t_total / dt);       /* number of time steps */
-    int snap_step = round(0.025 * nt);   /* save snapshot every ... steps */
+    int snap_step = round(0.1 * nt);   /* save snapshot every ... steps */
 
     printf("TIME STEPPING:\n");
     printf("\t%e\t:t_total\n", t_total);
