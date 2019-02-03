@@ -4,7 +4,7 @@ Short implementation of acoustic wave propagation using finite-differences in ti
 
 ![wave](doc/wave.gif)
 
-The code is intentionally written in single file to simplify understanding and startup.
+The code is intentionally written in a single file to simplify understanding and startup.
 
 
 CUDA implementation details:
@@ -31,7 +31,7 @@ We use CHECK() function to decode CUDA error codes and overall guidance from thi
   publisher={John Wiley \& Sons}
 }
 ```
-We also thank Armando Espíndola-Carmona from KAUST
+We also thank @armandoespindola from KAUST for sharing his expertise in CUDA programming
 
 oleg.ovcharenko@kaust.edu.sa
 
